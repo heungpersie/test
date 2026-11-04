@@ -1,140 +1,109 @@
-# 나중에 AWS ECS의 기존 BE 서비스를 교체하는 수동 CD입니다. 현재 기본 비활성입니다.
+# 파일 역할: 검증한 BE 이미지를 AWS ECS의 기존 서비스에 배포하는 수동 CD 초안입니다.
+# 실행 시점: 수동 실행만 허용하며 Repository Variable ECS_DEPLOY_ENABLED=true일 때만 활성화됩니다.
+# 입력/결과: GitHub Environment와 이미지 digest를 받아 새 Task Definition 배포·API 확인을 수행합니다.
+# 흐름: CI → 설정 검증 → OIDC 인증 → 이전 버전 기록 → 서비스 교체 → 검증 → 실패 시 복귀 시도.
+# 범위: 기본 비활성·AWS 실환경 미검증입니다. 신규 인프라·DB migration·AI GPU 배포는 포함하지 않습니다.
+# 준비: 3주차 예산·권한 확인 후 infra/ecs/README.md의 계정별 설정과 기존 서비스를 연결합니다.
 name: Deploy API to ECS (manual)
 
-# 언제 이 워크플로를 실행할지 정합니다.
+# 1. 수동 입력·기본 권한·배포 직렬화
+# 환경과 이미지 digest를 입력받습니다. 같은 환경의 실행은 겹치지 않게 하며 진행 중 배포를 자동 취소하지 않습니다.
 on:
-  # GitHub Actions 화면의 Run workflow로 수동 실행할 수 있습니다.
   workflow_dispatch:
-    # 수동 실행 화면에서 사용자가 입력할 항목입니다.
     inputs:
       target:
         description: GitHub Environment (configure before enabling)
         required: true
         type: choice
-        # 개발/발표용 GitHub Environment 이름입니다. AWS 계정이나 ECS 자체 환경을 생성하지 않습니다.
         options: [aws-dev, aws-demo]
       image:
-        # 태그가 아니라 실제 검증한 이미지 digest 전체 주소를 입력합니다.
         description: Verified full image reference, repository@sha256:digest
         required: true
         type: string
 
-# 이 범위의 GITHUB_TOKEN 권한입니다. job에 permissions가 있으면 그 job은 별도 권한을 사용합니다.
 permissions:
-  # 저장소 코드를 읽을 수 있습니다. Git push 권한은 부여하지 않습니다.
   contents: read
 
-# 같은 배포 환경의 동시 실행을 제한합니다. GitHub가 대기 실행을 무한 FIFO로 보존하는 것은 아닙니다.
 concurrency:
-  # 개발과 발표 환경을 별도 그룹으로 취급합니다.
   group: ecs-${{ inputs.target }}
-  # 새 요청이 와도 진행 중인 배포를 자동 취소하지 않습니다.
   cancel-in-progress: false
 
-# 독립 실행 단위입니다. needs가 없는 job끼리는 병렬로 실행할 수 있습니다.
 jobs:
-  # 기존 ci.yml을 호출하는 job입니다. 검사 실패 시 needs: validate인 후속 job이 실행되지 않습니다.
+  # 2. 실행 허용 조건과 CI
+  # 활성화 변수 true와 환경별 브랜치 조건을 모두 만족해야 합니다. aws-dev는 develop, aws-demo는 main입니다.
   validate:
-    # 배포를 시작할 조건입니다. 저장소 활성화 변수와 환경별 브랜치를 모두 검사합니다.
     if: >-
       vars.ECS_DEPLOY_ENABLED == 'true' &&
       ((inputs.target == 'aws-dev' && github.ref == 'refs/heads/develop') ||
        (inputs.target == 'aws-demo' && github.ref == 'refs/heads/main'))
-    # 같은 실행 커밋의 CI를 재사용합니다. 과거 다른 커밋의 성공 기록에 의존하지 않습니다.
     uses: ./.github/workflows/ci.yml
 
-  # 검증 이후 실제 AWS 접근을 수행하는 job입니다. 활성화 전에는 실행되지 않습니다.
+  # 3. 배포 job·Environment·OIDC 권한
+  # CI 성공 후 Environment의 변수·승인을 적용합니다. id-token:write는 토큰 발급 권한이며 AWS 권한은 별도 IAM 역할이 결정합니다.
   deploy:
-    # validate의 모든 검사가 성공해야 이 job을 시작합니다.
     needs: validate
-    # GitHub가 제공하는 임시 Linux 실행 머신입니다. ECS 서버가 아닙니다.
     runs-on: ubuntu-latest
-    # job 전체 최대 시간입니다. 취소·시간 초과 시 후속 복귀 단계 실행은 보장되지 않습니다.
     timeout-minutes: 30
-    # 선택한 Environment의 변수·승인 정책을 적용합니다. OIDC sub도 Environment 형태가 됩니다.
     environment: ${{ inputs.target }}
-    # 이 범위의 GITHUB_TOKEN 권한입니다. job에 permissions가 있으면 그 job은 별도 권한을 사용합니다.
     permissions:
-      # 저장소 코드를 읽을 수 있습니다. Git push 권한은 부여하지 않습니다.
       contents: read
-      # AWS에 제시할 OIDC 토큰 발급을 허용합니다. 그 자체가 AWS 관리자 권한은 아닙니다.
       id-token: write
-    # 아래 값들을 해당 job 또는 step의 환경변수로 전달합니다.
+    # 계정별 설정값 입력
+    # AWS·ECS 실행 대상, 역할, 이미지, DB, HTTPS 주소를 Environment Variables에서 받습니다.
+    # execution role은 ECS의 이미지/로그/Secret 처리용, task role은 앱용, deploy role은 GitHub 배포용입니다. DB 비밀번호는 원문 대신 Secret ARN을 전달합니다.
     env:
-      # AWS 리전. 아직 미정인 실제 값을 GitHub Environment에 등록합니다.
       AWS_REGION: ${{ vars.AWS_REGION }}
-      # 배포 대상 12자리 계정 ID. 비밀키가 아닙니다.
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-      # 미리 생성한 ECS 클러스터 이름.
       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
-      # 버전을 교체할 기존 ECS 서비스 이름.
       ECS_SERVICE: ${{ vars.ECS_SERVICE }}
-      # BE 실행 설정 revision을 묶는 family 이름.
       ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
-      # ECS가 이미지·로그·Secret을 처리할 때 사용하는 역할.
       ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
-      # 실행 중 앱이 AWS API에 접근할 때 사용하는 역할. 배포 역할과 다릅니다.
       ECS_TASK_ROLE_ARN: ${{ vars.ECS_TASK_ROLE_ARN }}
-      # 미리 생성한 CloudWatch 로그 그룹.
       ECS_LOG_GROUP: ${{ vars.ECS_LOG_GROUP }}
-      # 수동 입력받은 불변 digest 주소. 비밀정보가 아닙니다.
       ECS_IMAGE: ${{ inputs.image }}
-      # 허용할 이미지 저장소 경로. 다른 저장소 이미지 배포를 제한합니다.
       ECS_IMAGE_REPOSITORY: ${{ vars.ECS_IMAGE_REPOSITORY }}
-      # GitHub가 OIDC로 맡을 배포 역할.
       AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-      # 앱 환경 식별자. 예: dev / demo.
       APP_ENV: ${{ vars.APP_ENV }}
-      # 해당 ECS 환경에서 접근 가능한 DB 주소.
       DB_HOST: ${{ vars.DB_HOST }}
-      # 접속할 PostgreSQL 데이터베이스 이름.
       DB_NAME: ${{ vars.DB_NAME }}
-      # 앱 DB 사용자. 관리 계정 사용을 피합니다.
       DB_USER: ${{ vars.DB_USER }}
-      # 비밀번호 원문이 아니라 AWS Secrets Manager의 비밀 식별자.
       DB_PASSWORD_SECRET_ARN: ${{ vars.DB_PASSWORD_SECRET_ARN }}
-      # 배포 후 검증할 HTTPS 주소. GitHub runner에서 접근 가능해야 합니다.
       API_BASE_URL: ${{ vars.API_BASE_URL }}
-    # 이 job 안에서는 위에서 아래 순서로 실행합니다. 실패하면 보통 다음 단계는 건너뜁니다.
     steps:
-      # 현재 워크플로 실행의 코드를 가져옵니다. 새 버전 업그레이드는 별도 검증이 필요합니다.
       - uses: actions/checkout@v4
 
-      # AWS 인증 전에 빈 변수·계정 형식·허용 이미지 주소·HTTPS URL을 확인합니다.
+      # 4. 로컬 사전 검사·Task Definition 생성
+      # 빈 값·계정 형식·허용 저장소의 digest·HTTPS 주소를 확인합니다. Python이 JSON을 안전하게 생성하며 여기까지는 AWS에 접근하지 않습니다.
       - name: 필수 설정 확인 (AWS 변경 전)
         shell: bash
         run: |
-          # 오류·미정의 변수·파이프 중간 실패를 무시하고 계속 진행하지 않도록 합니다.
           set -euo pipefail
           for key in AWS_REGION AWS_ACCOUNT_ID ECS_CLUSTER ECS_SERVICE ECS_TASK_FAMILY ECS_EXECUTION_ROLE_ARN ECS_TASK_ROLE_ARN ECS_LOG_GROUP ECS_IMAGE_REPOSITORY AWS_DEPLOY_ROLE_ARN APP_ENV DB_HOST DB_NAME DB_USER DB_PASSWORD_SECRET_ARN API_BASE_URL; do
             if [[ -z "${!key}" ]]; then echo "Missing configuration: $key" >&2; exit 1; fi
           done
           [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
-          # 승인한 저장소 경로의 digest 이미지만 허용합니다. 이미지 출처 증명을 자동 검증하는 것은 아닙니다.
           [[ "$ECS_IMAGE" == "$ECS_IMAGE_REPOSITORY@sha256:"* ]]
           [[ "$API_BASE_URL" == https://* ]]
-          # JSON 템플릿의 변수만 치환하여 임시 Task Definition을 생성합니다. AWS 자원은 만들지 않습니다.
           python3 tools/render_ecs_task.py infra/ecs/task-definition.template.json /tmp/task-definition.json
 
-      # GitHub 신원을 AWS 역할로 교환합니다. 역할 신뢰 정책·권한은 AWS에 미리 적용해야 합니다.
+      # 5. AWS 단기 인증
+      # GitHub Environment 신원을 AWS 역할로 교환하고 대상 계정을 확인합니다. 장기 AWS 비밀키는 저장하지 않습니다.
       - name: OIDC로 AWS 임시 인증
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-          # 실수로 다른 AWS 계정에 인증되는 것을 검사합니다.
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           role-session-name: github-ecs-${{ github.run_id }}
 
-      # 이미 존재하는 서비스가 ACTIVE·실행 수 1 이상·ECS rolling 방식인지 확인하고 복귀 대상을 저장합니다.
+      # 6. 배포 대상 확인과 복귀 준비
+      # 응답의 failures도 검사하고 ACTIVE·desiredCount>0·ECS rolling 서비스만 허용합니다. 이전 revision을 출력·Summary에 기록합니다.
       - name: 기존 서비스·이전 버전 확인
         id: previous
         shell: bash
         run: |
-          # 오류·미정의 변수·파이프 중간 실패를 무시하고 계속 진행하지 않도록 합니다.
           set -euo pipefail
           aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" > /tmp/service.json
-          # AWS CLI가 성공해도 응답 내부에 서비스 조회 실패가 있을 수 있으므로 검사합니다.
           jq -e '.failures | length == 0' /tmp/service.json > /dev/null
           jq -e '.services | length == 1' /tmp/service.json > /dev/null
           jq -e '.services[0] | .status == "ACTIVE" and .desiredCount > 0 and .deploymentController.type == "ECS"' /tmp/service.json > /dev/null
@@ -142,39 +111,34 @@ jobs:
           echo "arn=$previous" >> "$GITHUB_OUTPUT"
           echo "- 이전 Task Definition: $previous" >> "$GITHUB_STEP_SUMMARY"
 
-      # 새 실행 설정 revision을 등록합니다. 이 단계만으로 태스크가 시작되는 것은 아닙니다.
+      # 7. 새 실행 설정 등록·서비스 교체
+      # revision 등록만으로는 실행되지 않습니다. 이어 update-service가 기존 서비스를 새 revision으로 교체하며 실제 자원에 영향을 줍니다.
       - name: 새 Task Definition 등록
         id: register
         shell: bash
         run: |
-          # 오류·미정의 변수·파이프 중간 실패를 무시하고 계속 진행하지 않도록 합니다.
           set -euo pipefail
           arn=$(aws ecs register-task-definition --cli-input-json file:///tmp/task-definition.json --query 'taskDefinition.taskDefinitionArn' --output text)
           echo "arn=$arn" >> "$GITHUB_OUTPUT"
 
-      # 기존 ECS 서비스가 새 revision으로 태스크를 교체하도록 요청합니다. 과금 자원에 영향을 줍니다.
       - name: 서비스 교체
         id: update
         shell: bash
-        # 아래 값들을 해당 job 또는 step의 환경변수로 전달합니다.
         env:
           NEW_TASK: ${{ steps.register.outputs.arn }}
         run: |
-          # 오류·미정의 변수·파이프 중간 실패를 무시하고 계속 진행하지 않도록 합니다.
           set -euo pipefail
           aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$NEW_TASK" > /dev/null
 
-      # 실제 새 버전이 실행됐는지와 API·DB 연결을 확인합니다.
+      # 8. 배포 성공 판정
+      # stable만으로 성공 처리하지 않고 새 revision·실행 수·rollout 완료와 /healthz·/readyz를 확인합니다. 업무 분석 E2E 검사는 별도입니다.
       - name: 안정화·실제 버전·API 확인
         id: verify
         shell: bash
-        # 아래 값들을 해당 job 또는 step의 환경변수로 전달합니다.
         env:
           NEW_TASK: ${{ steps.register.outputs.arn }}
         run: |
-          # 오류·미정의 변수·파이프 중간 실패를 무시하고 계속 진행하지 않도록 합니다.
           set -euo pipefail
-          # 서비스 안정화 대기입니다. 이전 버전으로 자동 복귀해도 stable일 수 있어 새 revision도 별도로 검사합니다.
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
           aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" > /tmp/deployed.json
           jq -e --arg task "$NEW_TASK" '.services[0] | .taskDefinition == $task and .runningCount == .desiredCount and .pendingCount == 0 and (.deployments | length == 1) and .deployments[0].rolloutState == "COMPLETED"' /tmp/deployed.json > /dev/null
@@ -187,18 +151,16 @@ jobs:
             echo '- 서비스 안정화·새 버전·API/DB 상태 확인 성공'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 업데이트 단계가 실행된 뒤 실패했을 때 이전 실행 설정으로 되돌립니다. DB 데이터는 되돌리지 않습니다.
+      # 9. 실패 복귀
+      # 갱신을 시도한 뒤 실패하면 이전 revision으로 복귀·안정화를 시도합니다. 원래 실행은 실패로 남고 DB 데이터는 되돌리지 않습니다.
+      # 취소·타임아웃·runner 중단에는 복귀 실행을 보장하지 못하므로 ECS circuit breaker와 수동 복구 절차가 필요합니다.
       - name: 실패 시 이전 Task Definition 복귀
-        # 복귀할 이전 버전이 있고 서비스 갱신 단계를 시도한 경우에만 실행합니다. 취소·runner 중단은 별도 대응이 필요합니다.
         if: failure() && steps.previous.outputs.arn != '' && steps.update.outcome != 'skipped'
-        # 아래 값들을 해당 job 또는 step의 환경변수로 전달합니다.
         env:
           PREVIOUS_TASK: ${{ steps.previous.outputs.arn }}
         shell: bash
         run: |
-          # 오류·미정의 변수·파이프 중간 실패를 무시하고 계속 진행하지 않도록 합니다.
           set -euo pipefail
           aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$PREVIOUS_TASK" > /dev/null
-          # 서비스 안정화 대기입니다. 이전 버전으로 자동 복귀해도 stable일 수 있어 새 revision도 별도로 검사합니다.
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
           echo "이전 Task Definition 복귀 요청·안정화: $PREVIOUS_TASK (원래 배포 실패는 유지)" >> "$GITHUB_STEP_SUMMARY"

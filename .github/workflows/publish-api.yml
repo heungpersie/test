@@ -1,109 +1,86 @@
-# 검증된 BE 이미지를 GHCR에 보관하는 절차입니다. 서버 배포는 하지 않습니다.
+# 파일 역할: 검증한 BE 컨테이너 이미지를 GHCR에 게시합니다.
+# 실행 시점: develop push 또는 develop을 선택한 수동 실행.
+# 입력/결과: 현재 커밋을 CI로 재검증하고 커밋 태그 이미지·digest를 게시 결과에 기록합니다.
+# 흐름: CI 재사용 → 이미지 주소 결정 → GHCR 인증 → 빌드·게시 → 결과 기록.
+# 범위: 실제 ECS 서비스 배포는 하지 않습니다. 이미지 게시와 서버 배포는 별도 작업입니다.
 name: Publish API image
 
-# 언제 이 워크플로를 실행할지 정합니다.
+# 1. 실행 조건·기본 권한
+# develop에 들어온 코드를 대상으로 하며 수동 실행도 develop에서만 진행합니다. 기본 토큰은 코드 읽기 전용입니다.
 on:
-  # 아래 branches에 지정된 브랜치로 커밋이 들어올 때 실행합니다.
   push:
-    # develop 병합 뒤 생성된 커밋을 게시합니다. main 병합으로는 게시하지 않습니다.
     branches: [develop]
-  # GitHub Actions 화면의 Run workflow로 수동 실행할 수 있습니다.
   workflow_dispatch:
 
-# 이 범위의 GITHUB_TOKEN 권한입니다. job에 permissions가 있으면 그 job은 별도 권한을 사용합니다.
 permissions:
-  # 저장소 코드를 읽을 수 있습니다. Git push 권한은 부여하지 않습니다.
   contents: read
 
-# 독립 실행 단위입니다. needs가 없는 job끼리는 병렬로 실행할 수 있습니다.
 jobs:
-  # 기존 ci.yml을 호출하는 job입니다. 검사 실패 시 needs: validate인 후속 job이 실행되지 않습니다.
+  # 2. CI 재사용
+  # 같은 실행 커밋의 ci.yml을 호출합니다. 과거 다른 커밋의 성공 기록 대신 현재 코드를 다시 검증합니다.
   validate:
-    # 수동 실행에서도 develop을 선택한 경우에만 검사·게시가 진행됩니다.
     if: github.ref == 'refs/heads/develop'
-    # 같은 실행 커밋의 CI를 재사용합니다. 과거 다른 커밋의 성공 기록에 의존하지 않습니다.
     uses: ./.github/workflows/ci.yml
 
-  # 검사를 통과한 뒤 GHCR에 게시하는 job입니다.
+  # 3. 게시 job·권한·출력
+  # CI 성공 후 시작합니다. 이 job만 packages:write를 받아 게시하며 이미지 이름과 digest를 출력으로 남깁니다.
   publish:
     name: Publish API to GHCR
-    # validate의 모든 검사가 성공해야 이 job을 시작합니다.
     needs: validate
-    # GitHub가 제공하는 임시 Linux 실행 머신입니다. ECS 서버가 아닙니다.
     runs-on: ubuntu-latest
-    # 이 범위의 GITHUB_TOKEN 권한입니다. job에 permissions가 있으면 그 job은 별도 권한을 사용합니다.
     permissions:
-      # 저장소 코드를 읽을 수 있습니다. Git push 권한은 부여하지 않습니다.
       contents: read
-      # 이 게시 job에서만 GHCR 패키지 업로드를 허용합니다.
       packages: write
-    # 이 job이 기록할 출력값입니다. 서버에 자동 배포한다는 의미는 아닙니다.
     outputs:
       image: ${{ steps.image.outputs.name }}
       digest: ${{ steps.build.outputs.digest }}
-    # 이 job 안에서는 위에서 아래 순서로 실행합니다. 실패하면 보통 다음 단계는 건너뜁니다.
     steps:
-      # runner에는 코드가 없으므로 checkout 액션으로 해당 실행의 코드를 가져옵니다.
       - name: 코드 가져오기
-        # 직접 작성한 쉘 명령 대신 공개 액션을 실행합니다.
         uses: actions/checkout@v4
 
-      # 현재 GitHub 소유자/저장소에서 이미지 주소를 만들어 팀 저장소로 옮겨도 재사용합니다.
+      # 이미지 식별
+      # 소유자/저장소를 소문자로 만들고 -api와 전체 커밋 SHA 태그를 붙입니다. GITHUB_OUTPUT으로 다음 단계에 전달합니다.
       - name: 이미지 이름과 태그 결정
-        # 뒤 단계에서 steps.image.outputs.<이름>으로 이 단계의 출력값을 읽습니다.
         id: image
         shell: bash
-        # 아래 값들을 해당 job 또는 step의 환경변수로 전달합니다.
         env:
-          # 예: heungpersie/test. 사용자 문자열을 쉘 코드에 직접 끼우지 않고 환경변수로 전달합니다.
           REPOSITORY: ${{ github.repository }}
         run: |
-          # Bash의 ,,로 소문자화하고 -api를 붙입니다. 이미지 저장소 경로는 소문자여야 합니다.
           image="ghcr.io/${REPOSITORY,,}-api"
-          # 다음 단계에서 사용할 이미지 이름을 Actions 출력 파일에 기록합니다.
           echo "name=$image" >> "$GITHUB_OUTPUT"
-          # 전체 Git 커밋 SHA를 태그로 사용합니다. 동일 태그 재게시 가능성 때문에 배포는 digest로 고정합니다.
           echo "tag=$image:sha-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-      # 컨테이너 이미지 빌드·캐시를 관리할 builder를 준비합니다.
+      # 빌드 도구·레지스트리 인증
+      # Buildx를 준비하고 자동 GITHUB_TOKEN으로 GHCR에 로그인합니다. 별도 개인 토큰을 코드에 넣지 않습니다.
       - name: Buildx 설정
         uses: docker/setup-buildx-action@v3
 
-      # 워크플로 전용 자동 GITHUB_TOKEN으로 인증합니다. 별도 개인 PAT를 코드에 넣지 않습니다.
       - name: GHCR 로그인
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          # 이 실행을 일으킨 GitHub 사용자입니다. 이미지의 소유자는 github.repository에서 결정됩니다.
           username: ${{ github.actor }}
-          # GitHub가 제공하는 토큰 참조입니다. 토큰 값을 로그에 출력하지 않습니다.
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 검사한 코드를 이미지로 만들고 GHCR에 push합니다.
+      # 이미지 게시
+      # api/를 linux/amd64로 빌드·push합니다. 소스·커밋 라벨과 빌드 캐시를 사용하며 실제 배포 식별자는 digest입니다.
       - name: 이미지 빌드 및 등록
-        # 게시된 digest를 steps.build.outputs.digest로 참조하기 위한 식별자입니다.
         id: build
         uses: docker/build-push-action@v6
         with:
-          # Dockerfile과 빌드에 전달할 파일 범위를 api/로 한정합니다.
           context: ./api
-          # 이미지를 runner에만 두지 않고 로그인한 GHCR에 업로드합니다.
           push: true
-          # 현재 배포 후보의 CPU 아키텍처입니다. ARM 네이티브 이미지는 별도 빌드가 필요합니다.
           platforms: linux/amd64
           tags: ${{ steps.image.outputs.tag }}
-          # 이미지 내부 메타데이터에 소스 저장소와 커밋을 기록합니다.
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          # 이전 빌드 캐시를 재사용하여 시간을 줄입니다.
           cache-from: type=gha
-          # 다음 빌드를 위해 캐시를 저장합니다. 앱 데이터 저장소와는 다릅니다.
           cache-to: type=gha,mode=max
 
-      # Actions 실행 Summary에 사람이 확인할 태그·digest를 남깁니다.
+      # 검증·배포를 위한 기록
+      # Actions Summary에 커밋·태그·digest를 남깁니다. 태그는 재게시될 수 있으므로 ECS 배포에는 digest를 사용합니다.
       - name: 게시 결과 기록
-        # 아래 값들을 해당 job 또는 step의 환경변수로 전달합니다.
         env:
           IMAGE: ${{ steps.image.outputs.name }}
           TAG: ${{ steps.image.outputs.tag }}
