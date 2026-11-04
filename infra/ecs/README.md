@@ -2,6 +2,8 @@
 
 2026-11-04 · BE 전용 Fargate 제안. AWS 리소스 생성·권한 적용·배포를 수행하지 않았다. 첫 실환경 검증은 3주차 예정이며 예산·권한 확인 후 진행한다. AI GPU·FE 배포 설정은 별도다.
 
+[파일별·항목별 해설](CONFIG_EXPLAINED.md)에서 주석과 함께 전체 흐름을 읽을 수 있다.
+
 ## 준비한 파일
 
 - ../../.github/workflows/deploy-ecs.yml: 수동 배포, CI 재검증, OIDC 인증, 기존 ECS Service 교체, 검증·실패 복귀.
