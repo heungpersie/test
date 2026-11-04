@@ -7,3 +7,5 @@
 - [API 실행 안내](api/README.md)
 
 일반 작업은 develop 대상 PR, develop 병합 후 API CI 재검증과 GHCR 게시가 실행됩니다. 서버 CD는 아직 연결하지 않았습니다.
+
+- [ECS CD 기본 설정 초안](infra/ecs/README.md)

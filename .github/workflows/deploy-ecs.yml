@@ -1,0 +1,138 @@
+name: Deploy API to ECS (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: GitHub Environment (configure before enabling)
+        required: true
+        type: choice
+        options: [aws-dev, aws-demo]
+      image:
+        description: Verified full image reference, repository@sha256:digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecs-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: >-
+      vars.ECS_DEPLOY_ENABLED == 'true' &&
+      ((inputs.target == 'aws-dev' && github.ref == 'refs/heads/develop') ||
+       (inputs.target == 'aws-demo' && github.ref == 'refs/heads/main'))
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.target }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY }}
+      ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+      ECS_TASK_ROLE_ARN: ${{ vars.ECS_TASK_ROLE_ARN }}
+      ECS_LOG_GROUP: ${{ vars.ECS_LOG_GROUP }}
+      ECS_IMAGE: ${{ inputs.image }}
+      ECS_IMAGE_REPOSITORY: ${{ vars.ECS_IMAGE_REPOSITORY }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      APP_ENV: ${{ vars.APP_ENV }}
+      DB_HOST: ${{ vars.DB_HOST }}
+      DB_NAME: ${{ vars.DB_NAME }}
+      DB_USER: ${{ vars.DB_USER }}
+      DB_PASSWORD_SECRET_ARN: ${{ vars.DB_PASSWORD_SECRET_ARN }}
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 필수 설정 확인 (AWS 변경 전)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in AWS_REGION AWS_ACCOUNT_ID ECS_CLUSTER ECS_SERVICE ECS_TASK_FAMILY ECS_EXECUTION_ROLE_ARN ECS_TASK_ROLE_ARN ECS_LOG_GROUP ECS_IMAGE_REPOSITORY AWS_DEPLOY_ROLE_ARN APP_ENV DB_HOST DB_NAME DB_USER DB_PASSWORD_SECRET_ARN API_BASE_URL; do
+            if [[ -z "${!key}" ]]; then echo "Missing configuration: $key" >&2; exit 1; fi
+          done
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$ECS_IMAGE" == "$ECS_IMAGE_REPOSITORY@sha256:"* ]]
+          [[ "$API_BASE_URL" == https://* ]]
+          python3 tools/render_ecs_task.py infra/ecs/task-definition.template.json /tmp/task-definition.json
+
+      - name: OIDC로 AWS 임시 인증
+        uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: github-ecs-${{ github.run_id }}
+
+      - name: 기존 서비스·이전 버전 확인
+        id: previous
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" > /tmp/service.json
+          jq -e '.failures | length == 0' /tmp/service.json > /dev/null
+          jq -e '.services | length == 1' /tmp/service.json > /dev/null
+          jq -e '.services[0] | .status == "ACTIVE" and .desiredCount > 0 and .deploymentController.type == "ECS"' /tmp/service.json > /dev/null
+          previous=$(jq -r '.services[0].taskDefinition' /tmp/service.json)
+          echo "arn=$previous" >> "$GITHUB_OUTPUT"
+          echo "- 이전 Task Definition: $previous" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 새 Task Definition 등록
+        id: register
+        shell: bash
+        run: |
+          set -euo pipefail
+          arn=$(aws ecs register-task-definition --cli-input-json file:///tmp/task-definition.json --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+
+      - name: 서비스 교체
+        id: update
+        shell: bash
+        env:
+          NEW_TASK: ${{ steps.register.outputs.arn }}
+        run: |
+          set -euo pipefail
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$NEW_TASK" > /dev/null
+
+      - name: 안정화·실제 버전·API 확인
+        id: verify
+        shell: bash
+        env:
+          NEW_TASK: ${{ steps.register.outputs.arn }}
+        run: |
+          set -euo pipefail
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" > /tmp/deployed.json
+          jq -e --arg task "$NEW_TASK" '.services[0] | .taskDefinition == $task and .runningCount == .desiredCount and .pendingCount == 0 and (.deployments | length == 1) and .deployments[0].rolloutState == "COMPLETED"' /tmp/deployed.json > /dev/null
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --max-time 15 "${API_BASE_URL%/}/healthz" > /dev/null
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --max-time 15 "${API_BASE_URL%/}/readyz" > /dev/null
+          {
+            echo '## ECS 배포 확인 완료'
+            echo "- 이미지: $ECS_IMAGE"
+            echo "- Task Definition: $NEW_TASK"
+            echo '- 서비스 안정화·새 버전·API/DB 상태 확인 성공'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 실패 시 이전 Task Definition 복귀
+        if: failure() && steps.previous.outputs.arn != '' && steps.update.outcome != 'skipped'
+        env:
+          PREVIOUS_TASK: ${{ steps.previous.outputs.arn }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$PREVIOUS_TASK" > /dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          echo "이전 Task Definition 복귀 요청·안정화: $PREVIOUS_TASK (원래 배포 실패는 유지)" >> "$GITHUB_STEP_SUMMARY"
