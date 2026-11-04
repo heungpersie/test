@@ -2,6 +2,8 @@
 
 2026-11-04 · ECS 대안을 종료하고 EC2에 Docker Compose로 배포하는 초안으로 교체했다. AWS 리소스 생성·SSH 접속·실배포는 수행하지 않았다. 1주차는 설정 준비, 실제 AWS 실행은 예산 확인 후 3주차 예정이다.
 
+[환경 분리 기준·완료 범위](ENVIRONMENTS.md)를 먼저 확인한다.
+
 ## 파일과 흐름
 
 | 파일 | 역할 |
@@ -11,13 +13,14 @@
 | .github/workflows/deploy-compose.yml | 수동 입력·SSH 인증·파일 전달·서버 배포. 기본 비활성 |
 | infra/deploy/compose.yaml | 서버에서 게시된 BE 이미지를 실행. DB·AI·저장소 생성 없음 |
 | infra/deploy/deploy.sh | digest pull·교체·상태 검사·이전 이미지와 Compose 복귀 |
-| infra/deploy/.env.example | 서버 환경별 앱 변수 작성 예시. 실제 api.env는 서버에서만 보관 |
+| infra/deploy/.env.example | 공통 예시. 실제 작성은 environments/dev·demo/.env.example 사용 |
+| infra/deploy/validate_environment.py | 해석된 Compose의 대상 환경·DB·포트 혼선 검사 |
 
 전체 흐름: PR CI → develop 병합·이미지 게시 → 검증한 digest 선택 → EC2 pull → Compose 교체 → /healthz·/readyz 확인. 현재는 수동 배포 초안이며 자동 push 배포로 전환한 것은 아니다.
 
 ## 실행 전 준비 — 지금 생성하지 않음
 
-- AWS EC2 Linux x86_64 서버, Docker Engine·Compose v2(--wait 지원)·Bash·flock 설치. ARM 서버는 이미지 플랫폼과 에뮬레이션/별도 빌드를 검토한다.
+- AWS EC2 Linux x86_64 서버, Docker Engine·Compose v2(--wait 지원)·Python 3·Bash·flock 설치. ARM 서버는 이미지 플랫폼과 에뮬레이션/별도 빌드를 검토한다.
 - SSH 접속 계정은 Docker 실행과 배포 디렉터리 쓰기가 가능해야 한다. Docker 접근은 서버의 높은 권한에 해당하므로 전용 배포 키·계정으로 관리한다. 비밀번호·sudo 대화형 입력은 사용하지 않는다.
 - SSH 22번 접근 경로를 마련한다. GitHub-hosted runner의 IP는 고정이 아니므로 사설 서버에는 네트워크가 연결된 self-hosted runner 등 별도 설계가 필요하다. 편의를 위해 인터넷 전체에 SSH를 열지 않는다.
 - 서버에 /opt/presentation/dev/shared/api.env 또는 /opt/presentation/demo/shared/api.env 작성. 소유자를 배포 계정으로 지정하고 파일 권한 600. 파일은 Git·이미지·Actions artifact에 넣지 않는다.
@@ -59,7 +62,7 @@ aws-dev는 develop, aws-demo는 main으로 Environment 허용 브랜치를 제�
 1. 활성화 이후 Actions에서 환경·허용 브랜치·검증한 이미지 digest 선택.
 2. 기존 CI 재실행. 입력 digest가 검증된 게시 이미지인지 릴리스 리뷰로 대조.
 3. runner에서 입력 검증·known_hosts 고정, 공개 설정 파일만 업로드.
-4. 서버에서 잠금 획득, Compose 문법 검증·pull. 이 단계 실패 시 기존 API를 변경하지 않음.
+4. 서버에서 잠금 획득, Compose 환경 분리 검증·pull. 이 단계 실패 시 기존 API를 변경하지 않음.
 5. Compose up --wait와 컨테이너 내부 /healthz·/readyz HTTP 검사.
 6. 성공하면 current 갱신. 실패하면 이전 릴리스의 Compose·digest로 복귀하고 상태 확인, 워크플로는 실패 유지.
 

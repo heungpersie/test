@@ -69,3 +69,14 @@ jobs:
 
       - name: 이미지 빌드 확인
         run: docker build -t presentation-coach-api:check ./api
+
+  # 배포 환경 검사: 서버 없이 dev/demo 혼선·포트 공개·DB명 혼용 차단을 검증합니다.
+  deployment-config:
+    name: Deployment config checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 환경 분리 검사 테스트
+        run: python3 -m unittest discover -s tools/tests -p 'test_deployment_environment.py' -v
+      - name: 배포 스크립트 구문 검사
+        run: bash -n infra/deploy/deploy.sh

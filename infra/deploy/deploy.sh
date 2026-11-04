@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 파일 역할: EC2에서 이미지 digest로 BE를 교체하고 실패하면 이전 릴리스로 복귀합니다.
 # 입력: 배포 루트, 업로드된 릴리스 디렉터리, 검증한 이미지 digest.
-# 전제: Docker Compose v2(--wait 지원), flock, DB 연결, shared/api.env 사전 준비.
+# 전제: Docker Compose v2(--wait 지원), Python 3, flock, DB 연결, shared/api.env 사전 준비.
 # 범위: 서버/DB 생성·migration·TLS·AI 배포는 수행하지 않습니다.
 set -euo pipefail
 
@@ -30,7 +30,7 @@ probe() {
 }
 
 # 3. 변경 전 검사·pull: 실패해도 현재 실행 버전을 건드리지 않습니다.
-compose "$release" config --quiet
+compose "$release" config --format json | python3 "$release/validate_environment.py" "${base##*/}"
 compose "$release" pull api
 
 # 4. 서비스 교체·상태 확인: 새 버전 성공 시에만 current 포인터를 갱신합니다.

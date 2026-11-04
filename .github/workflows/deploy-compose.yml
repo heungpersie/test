@@ -60,7 +60,11 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/compose-ssh/key"
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/compose-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/compose-ssh/"*
-          if [[ "$TARGET" == aws-dev ]]; then base=/opt/presentation/dev; else base=/opt/presentation/demo; fi
+          case "$TARGET" in
+            aws-dev) base=/opt/presentation/dev ;;
+            aws-demo) base=/opt/presentation/demo ;;
+            *) echo "Unknown environment" >&2; exit 1 ;;
+          esac
           echo "DEPLOY_BASE=$base" >> "$GITHUB_ENV"
           echo "DEPLOY_RELEASE=$base/releases/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
       # 3. 실행 코드와 Compose만 전달합니다. DB 비밀번호·서버 api.env는 전송하지 않습니다.
@@ -70,7 +74,7 @@ jobs:
           set -euo pipefail
           opts=(-i "$RUNNER_TEMP/compose-ssh/key" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/compose-ssh/known_hosts")
           ssh "${opts[@]}" "$SSH_USER@$SSH_HOST" "mkdir -p '$DEPLOY_RELEASE'"
-          scp "${opts[@]}" infra/deploy/compose.yaml infra/deploy/deploy.sh "$SSH_USER@$SSH_HOST:$DEPLOY_RELEASE/"
+          scp "${opts[@]}" infra/deploy/compose.yaml infra/deploy/deploy.sh infra/deploy/validate_environment.py "$SSH_USER@$SSH_HOST:$DEPLOY_RELEASE/"
           ssh "${opts[@]}" "$SSH_USER@$SSH_HOST" "bash '$DEPLOY_RELEASE/deploy.sh' '$DEPLOY_BASE' '$DEPLOY_RELEASE' '$DEPLOY_IMAGE'"
           {
             echo '## EC2 Compose 배포·상태 검사 성공'
