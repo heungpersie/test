@@ -1,0 +1,56 @@
+name: API CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: API checks
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: uv 설치
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.12.15"
+
+      - name: Python 설치
+        run: uv python install
+
+      - name: 의존성 설치
+        run: uv sync --locked
+
+      - name: 린트 검사
+        run: uv run --locked ruff check .
+
+      - name: 포맷 검사
+        run: uv run --locked ruff format --check .
+
+      - name: 타입 검사
+        run: uv run --locked mypy app
+
+      - name: 단위 테스트
+        run: uv run --locked pytest -q
+
+  docker-build:
+    name: API Docker build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 이미지 빌드 확인
+        run: docker build -t presentation-coach-api:check ./api
