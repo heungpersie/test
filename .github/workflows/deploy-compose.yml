@@ -1,7 +1,7 @@
 # 파일 역할: EC2에 배포 파일만 전달하고 서버의 Docker Compose로 BE를 교체합니다.
 # 실행: 기본 비활성·수동 실행. develop→aws-dev, main→aws-demo만 허용합니다.
 # 입력/결과: 검증된 이미지 digest → 서버 pull·기동·상태 검사 → 실패 시 이전 릴리스 복귀 시도.
-# AWS API/OIDC/ECS를 사용하지 않으며 EC2 SSH 접속을 사용합니다. 서버 생성·DB/TLS 설정은 별도입니다.
+# GitHub→EC2는 SSH, EC2→ECR은 인스턴스 역할로 인증합니다. 서버·RDS·S3 생성은 별도입니다.
 name: Deploy API with Compose (manual)
 on:
   workflow_dispatch:
@@ -54,7 +54,7 @@ jobs:
           done
           [[ "$SSH_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
           [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
-          [[ "$DEPLOY_IMAGE" =~ ^[a-z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]]
+          [[ "$DEPLOY_IMAGE" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z]{2}-[a-z]+-[0-9]+\.amazonaws\.com/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
           [[ "$DEPLOY_IMAGE" == "$IMAGE_REPOSITORY@sha256:"* ]]
           install -m 700 -d "$RUNNER_TEMP/compose-ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/compose-ssh/key"

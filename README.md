@@ -11,3 +11,5 @@
 - [EC2·Compose CD 기본 설정](infra/deploy/README.md)
 
 - [개발·배포 환경 분리 설정](infra/deploy/ENVIRONMENTS.md)
+
+- [RDS·S3·ECR 선택과 인증 설정](infra/aws/README.md)

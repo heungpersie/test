@@ -11,7 +11,7 @@
 | .github/workflows/ci.yml | PR 코드·타입·테스트·빌드. 유지 |
 | .github/workflows/publish-api.yml | develop 병합 후 CI·GHCR 게시. 유지 |
 | .github/workflows/deploy-compose.yml | 수동 입력·SSH 인증·파일 전달·서버 배포. 기본 비활성 |
-| infra/deploy/compose.yaml | 서버에서 게시된 BE 이미지를 실행. DB·AI·저장소 생성 없음 |
+| infra/deploy/compose.yaml | 서버에서 게시된 BE 이미지를 실행. RDS·AI·S3 생성 없음 |
 | infra/deploy/deploy.sh | digest pull·교체·상태 검사·이전 이미지와 Compose 복귀 |
 | infra/deploy/.env.example | 공통 예시. 실제 작성은 environments/dev·demo/.env.example 사용 |
 | infra/deploy/validate_environment.py | 해석된 Compose의 대상 환경·DB·포트 혼선 검사 |
@@ -20,13 +20,13 @@
 
 ## 실행 전 준비 — 지금 생성하지 않음
 
-- AWS EC2 Linux x86_64 서버, Docker Engine·Compose v2(--wait 지원)·Python 3·Bash·flock 설치. ARM 서버는 이미지 플랫폼과 에뮬레이션/별도 빌드를 검토한다.
+- AWS EC2 Linux x86_64 서버, Docker Engine·Compose v2(--wait 지원)·Python 3·AWS CLI v2·Bash·flock 설치. ARM 서버는 이미지 플랫폼과 에뮬레이션/별도 빌드를 검토한다.
 - SSH 접속 계정은 Docker 실행과 배포 디렉터리 쓰기가 가능해야 한다. Docker 접근은 서버의 높은 권한에 해당하므로 전용 배포 키·계정으로 관리한다. 비밀번호·sudo 대화형 입력은 사용하지 않는다.
 - SSH 22번 접근 경로를 마련한다. GitHub-hosted runner의 IP는 고정이 아니므로 사설 서버에는 네트워크가 연결된 self-hosted runner 등 별도 설계가 필요하다. 편의를 위해 인터넷 전체에 SSH를 열지 않는다.
 - 서버에 /opt/presentation/dev/shared/api.env 또는 /opt/presentation/demo/shared/api.env 작성. 소유자를 배포 계정으로 지정하고 파일 권한 600. 파일은 Git·이미지·Actions artifact에 넣지 않는다.
-- DB는 사전 준비하고 접근 주소·계정·DB를 환경별로 분리한다. 배포 Compose는 DB를 만들거나 로컬 coach 볼륨을 사용하지 않는다. migration은 별도 승인된 절차로 수행한다.
+- RDS PostgreSQL은 사전 준비하고 접근 주소·계정·DB를 환경별로 분리한다. 배포 Compose는 DB를 만들거나 로컬 coach 볼륨을 사용하지 않는다. migration은 별도 승인된 절차로 수행한다.
 - API는 127.0.0.1의 18000(dev)·18001(demo) 등에만 바인딩한다. 외부 접속용 HTTPS reverse proxy·도메인·방화벽은 별도 설정한다.
-- 이미지 pull은 서버 Docker 자격정보를 사용한다. 비공개 GHCR은 서버에서 읽기 전용 자격정보로 docker login --password-stdin 설정. ECR을 선택한다면 인스턴스 역할·로그인/credential helper를 별도 준비한다. 현재 기본 검증 레지스트리는 GHCR이다.
+- 이미지 저장소는 ECR이다. 서버는 읽기 전용 EC2 인스턴스 역할로 배포 때마다 ECR 로그인하며 임시 Docker 인증 파일은 종료 시 삭제한다. [AWS 역할·연결 준비](../aws/README.md)를 따른다.
 
 ## GitHub 변수·Secret
 
@@ -36,7 +36,7 @@ GitHub Environments aws-dev / aws-demo:
 
 | 종류 | 이름 | 내용 |
 |---|---|---|
-| Variable | IMAGE_REPOSITORY | 허용할 경로. 예: ghcr.io/heungpersie/test-api |
+| Variable | IMAGE_REPOSITORY | 허용할 경로. <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/<REPOSITORY> |
 | Secret | EC2_SSH_HOST | 서버 DNS 또는 IPv4. IPv6는 현재 검증식에서 미지원 |
 | Secret | EC2_SSH_USER | SSH 접속 계정 |
 | Secret | EC2_SSH_PRIVATE_KEY | 전용 SSH 개인키. 원문을 문서·채팅에 붙이지 않음 |
@@ -44,7 +44,7 @@ GitHub Environments aws-dev / aws-demo:
 
 aws-dev는 develop, aws-demo는 main으로 Environment 허용 브랜치를 제한하고 발표 환경에는 승인자를 설정한다. 워크플로 자체에도 동일한 제한이 있다. 신규 워크플로는 기본 브랜치에 반영되어야 Actions 수동 실행 화면에서 이용할 수 있다. 서버 키를 확인 없이 ssh-keyscan 결과만 신뢰하지 않는다.
 
-실제 앱 변수는 GitHub가 아니라 서버 api.env에 둔다: APP_ENV, API_HOST_PORT, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD. api.env는 Docker 환경변수로 전달되므로 Docker 관리자에게는 조회될 수 있다. AWS Secrets Manager 직접 주입은 이번 SSH 초안에 포함하지 않는다.
+실제 앱 변수는 GitHub가 아니라 서버 api.env에 둔다: APP_ENV, API_HOST_PORT, DB_HOST(RDS endpoint), DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, RDS_CA_BUNDLE_HOST_PATH. S3 변수는 SDK 연동 전 예약값이다. RDS 공개 CA bundle은 서버에 사전 준비한다. api.env는 Docker 환경변수로 전달되므로 Docker 관리자에게는 조회될 수 있다. AWS Secrets Manager 직접 주입은 이번 SSH 초안에 포함하지 않는다.
 
 ## 서버 배포 디렉터리
 

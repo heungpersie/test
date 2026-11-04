@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 파일 역할: EC2에서 이미지 digest로 BE를 교체하고 실패하면 이전 릴리스로 복귀합니다.
 # 입력: 배포 루트, 업로드된 릴리스 디렉터리, 검증한 이미지 digest.
-# 전제: Docker Compose v2(--wait 지원), Python 3, flock, DB 연결, shared/api.env 사전 준비.
+# 전제: Docker Compose v2(--wait 지원), Python 3, flock, DB 연결, AWS CLI v2·EC2 인스턴스 역할, shared/api.env 사전 준비.
 # 범위: 서버/DB 생성·migration·TLS·AI 배포는 수행하지 않습니다.
 set -euo pipefail
 
@@ -9,7 +9,9 @@ set -euo pipefail
 base=${1:?deployment root}; release=${2:?release directory}; image=${3:?image digest}
 [[ "$base" =~ ^/opt/presentation/(dev|demo)$ ]] || exit 2
 [[ "$release" =~ ^$base/releases/[0-9]+-[0-9]+$ ]] || exit 2
-[[ "$image" =~ ^[a-z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || exit 2
+[[ "$image" =~ ^([0-9]{12})\.dkr\.ecr\.([a-z]{2}-[a-z]+-[0-9]+)\.amazonaws\.com/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]] || exit 2
+registry="${image%%/*}"
+ecr_region="${BASH_REMATCH[2]}"
 [[ -f "$base/shared/api.env" && -f "$release/compose.yaml" ]] || exit 2
 exec 9>"$base/deploy.lock"
 flock -n 9 || { echo 'Another deployment is active' >&2; exit 1; }
@@ -31,6 +33,12 @@ probe() {
 
 # 3. 변경 전 검사·pull: 실패해도 현재 실행 버전을 건드리지 않습니다.
 compose "$release" config --format json | python3 "$release/validate_environment.py" "${base##*/}"
+# EC2에 연결한 읽기 전용 인스턴스 역할로 인증합니다. GitHub의 push 역할과 분리합니다.
+# 로그인 토큰을 영구 저장하지 않도록 임시 Docker 설정을 사용하며 종료 시 삭제합니다.
+export DOCKER_CONFIG
+DOCKER_CONFIG=$(mktemp -d)
+trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+aws ecr get-login-password --region "$ecr_region" | docker login --username AWS --password-stdin "$registry"
 compose "$release" pull api
 
 # 4. 서비스 교체·상태 확인: 새 버전 성공 시에만 current 포인터를 갱신합니다.

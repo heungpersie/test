@@ -1,71 +1,88 @@
-# 파일 역할: 검증한 BE 컨테이너 이미지를 GHCR에 게시합니다.
-# 실행 시점: develop push 또는 develop을 선택한 수동 실행.
-# 입력/결과: 현재 커밋을 CI로 재검증하고 커밋 태그 이미지·digest를 게시 결과에 기록합니다.
-# 흐름: CI 재사용 → 이미지 주소 결정 → GHCR 인증 → 빌드·게시 → 결과 기록.
-# 범위: 실제 EC2 서비스 배포는 하지 않습니다. 이미지 게시와 서버 배포는 별도 작업입니다.
+# 파일 역할: 검증한 BE 이미지를 Amazon ECR private registry에 게시합니다.
+# 실행: develop push/수동 실행. ECR_PUBLISH_ENABLED=true 전에는 AWS 게시를 건너뜁니다.
+# 흐름: 코드 CI → 계정 설정 확인 → GitHub OIDC 임시 인증 → ECR 로그인 → 빌드·게시 → digest 기록.
+# 권한: GitHub에 장기 AWS 키를 두지 않습니다. EC2 서버 배포·RDS/S3 생성은 수행하지 않습니다.
 name: Publish API image
-
-# 1. 실행 조건·기본 권한
-# develop에 들어온 코드를 대상으로 하며 수동 실행도 develop에서만 진행합니다. 기본 토큰은 코드 읽기 전용입니다.
 on:
   push:
     branches: [develop]
   workflow_dispatch:
-
 permissions:
   contents: read
-
+concurrency:
+  group: ecr-api-publish-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  # 2. CI 재사용
-  # 같은 실행 커밋의 ci.yml을 호출합니다. 과거 다른 커밋의 성공 기록 대신 현재 코드를 다시 검증합니다.
+  # 1. 현재 커밋을 기존 CI로 검증합니다. AWS가 비활성이어도 코드 검사는 실행합니다.
   validate:
     if: github.ref == 'refs/heads/develop'
     uses: ./.github/workflows/ci.yml
-
-  # 3. 게시 job·권한·출력
-  # CI 성공 후 시작합니다. 이 job만 packages:write를 받아 게시하며 이미지 이름과 digest를 출력으로 남깁니다.
   publish:
-    name: Publish API to GHCR
+    name: Publish API to ECR
+    if: vars.ECR_PUBLISH_ENABLED == 'true'
     needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      AWS_ECR_PUBLISH_ROLE_ARN: ${{ vars.AWS_ECR_PUBLISH_ROLE_ARN }}
     outputs:
       image: ${{ steps.image.outputs.name }}
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
     steps:
-      - name: 코드 가져오기
-        uses: actions/checkout@v4
-
-      # 이미지 식별
-      # 소유자/저장소를 소문자로 만들고 -api와 전체 커밋 SHA 태그를 붙입니다. GITHUB_OUTPUT으로 다음 단계에 전달합니다.
-      - name: 이미지 이름과 태그 결정
+      - uses: actions/checkout@v4
+      # 2. 값 누락·계정/주소 형식을 인증 전에 검사합니다. AWS commercial partition 기준입니다.
+      - name: ECR 설정 확인
         id: image
         shell: bash
-        env:
-          REPOSITORY: ${{ github.repository }}
         run: |
-          image="ghcr.io/${REPOSITORY,,}-api"
-          echo "name=$image" >> "$GITHUB_OUTPUT"
-          echo "tag=$image:sha-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-
-      # 빌드 도구·레지스트리 인증
-      # Buildx를 준비하고 자동 GITHUB_TOKEN으로 GHCR에 로그인합니다. 별도 개인 토큰을 코드에 넣지 않습니다.
-      - name: Buildx 설정
-        uses: docker/setup-buildx-action@v3
-
-      - name: GHCR 로그인
-        uses: docker/login-action@v3
+          set -euo pipefail
+          for key in AWS_REGION AWS_ACCOUNT_ID ECR_REPOSITORY AWS_ECR_PUBLISH_ROLE_ARN; do
+            [[ -n "${!key}" ]] || { echo "Missing setting: $key" >&2; exit 1; }
+          done
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]
+          [[ "$ECR_REPOSITORY" =~ ^[a-z0-9]+([._/-][a-z0-9]+)*$ ]]
+          registry="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          echo "registry=$registry" >> "$GITHUB_OUTPUT"
+          echo "name=$registry/$ECR_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "tag=$registry/$ECR_REPOSITORY:sha-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: OIDC로 ECR 게시 역할 인증
+        uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # 이미지 게시
-      # api/를 linux/amd64로 빌드·push합니다. 소스·커밋 라벨과 빌드 캐시를 사용하며 실제 배포 식별자는 digest입니다.
-      - name: 이미지 빌드 및 등록
+          role-to-assume: ${{ vars.AWS_ECR_PUBLISH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+      # 3. 같은 커밋 태그가 이미 있으면 덮어쓰지 않고 기존 digest를 재사용합니다.
+      # ImageNotFound 외 오류는 권한/네트워크 문제일 수 있으므로 빌드로 숨기지 않고 실패시킵니다.
+      - name: 기존 이미지 확인
+        id: existing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids "imageTag=sha-$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/tmp/ecr-error); then
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          elif grep -q 'ImageNotFoundException' /tmp/ecr-error; then
+            echo 'digest=' >> "$GITHUB_OUTPUT"
+          else
+            cat /tmp/ecr-error >&2
+            exit 1
+          fi
+      - name: ECR 로그인
+        env:
+          REGISTRY: ${{ steps.image.outputs.registry }}
+        run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+      - uses: docker/setup-buildx-action@v3
+        if: steps.existing.outputs.digest == ''
+      # 4. 이미지 플랫폼·소스 라벨·캐시는 유지하고 게시 목적지만 GHCR에서 ECR로 바꿉니다.
+      - name: 이미지 빌드·ECR 게시
         id: build
+        if: steps.existing.outputs.digest == ''
         uses: docker/build-push-action@v6
         with:
           context: ./api
@@ -77,21 +94,15 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      # 검증·배포를 위한 기록
-      # Actions Summary에 커밋·태그·digest를 남깁니다. 태그는 재게시될 수 있으므로 Compose 배포에는 digest를 사용합니다.
       - name: 게시 결과 기록
         env:
           IMAGE: ${{ steps.image.outputs.name }}
           TAG: ${{ steps.image.outputs.tag }}
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
         run: |
           {
-            echo '## API 이미지 게시 완료'
-            echo
+            echo '## ECR 이미지 준비 완료 (서버 배포는 별도)'
             echo "- 커밋: $GITHUB_SHA"
             echo "- 태그: $TAG"
             echo "- 배포 식별자: $IMAGE@$DIGEST"
-            echo '- 플랫폼: linux/amd64'
-            echo '- 이미지 게시 완료이며 서버 배포는 별도입니다.'
           } >> "$GITHUB_STEP_SUMMARY"

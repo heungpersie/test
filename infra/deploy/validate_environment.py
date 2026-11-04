@@ -32,6 +32,9 @@ def validate(config, target):
         (env.get('DB_NAME') == policy['db'], 'DB_NAME이 대상 환경과 다릅니다.'),
         (env.get('DB_USER') == policy['user'], 'DB_USER가 대상 환경과 다릅니다.'),
         (bool(env.get('DB_PASSWORD')), 'DB_PASSWORD가 비어 있습니다.'),
+        (env.get('PGSSLMODE') == 'verify-full' and
+         env.get('PGSSLROOTCERT') == '/etc/ssl/rds/global-bundle.pem',
+         'RDS 연결은 verify-full 및 지정 CA 경로를 사용해야 합니다.'),
         (bool(env.get('DB_HOST')) and env.get('DB_HOST', '').lower() not in
          {'localhost', '127.0.0.1', '::1', 'postgres', 'host.docker.internal'},
          'DB_HOST는 사전 준비한 배포 DB의 접근 가능한 주소여야 합니다.'),

@@ -15,7 +15,9 @@ def config(target):
     return {'name': policy['project'], 'services': {'api': {
         'environment': {'APP_ENV': target, 'DB_HOST': 'db.internal.example',
                         'DB_NAME': policy['db'], 'DB_USER': policy['user'],
-                        'DB_PASSWORD': 'test-secret-do-not-print'},
+                        'DB_PASSWORD': 'test-secret-do-not-print',
+                        'PGSSLMODE': 'verify-full',
+                        'PGSSLROOTCERT': '/etc/ssl/rds/global-bundle.pem'},
         'ports': [{'host_ip': '127.0.0.1', 'published': policy['port'], 'target': 8000}],
     }}}
 
@@ -46,6 +48,11 @@ class EnvironmentSeparationTests(unittest.TestCase):
         bad['name'] = 'wrong-project'
         messages = module.validate(bad, 'dev')
         self.assertNotIn('test-secret-do-not-print', '\n'.join(messages))
+
+    def test_rds_tls_downgrade_is_rejected(self):
+        bad = config('dev')
+        bad['services']['api']['environment']['PGSSLMODE'] = 'disable'
+        self.assertTrue(module.validate(bad, 'dev'))
 
     def test_unknown_environment_is_rejected(self):
         self.assertTrue(module.validate(config('dev'), 'production'))
