@@ -2,7 +2,7 @@
 # 실행 시점: develop push 또는 develop을 선택한 수동 실행.
 # 입력/결과: 현재 커밋을 CI로 재검증하고 커밋 태그 이미지·digest를 게시 결과에 기록합니다.
 # 흐름: CI 재사용 → 이미지 주소 결정 → GHCR 인증 → 빌드·게시 → 결과 기록.
-# 범위: 실제 ECS 서비스 배포는 하지 않습니다. 이미지 게시와 서버 배포는 별도 작업입니다.
+# 범위: 실제 EC2 서비스 배포는 하지 않습니다. 이미지 게시와 서버 배포는 별도 작업입니다.
 name: Publish API image
 
 # 1. 실행 조건·기본 권한
@@ -79,7 +79,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       # 검증·배포를 위한 기록
-      # Actions Summary에 커밋·태그·digest를 남깁니다. 태그는 재게시될 수 있으므로 ECS 배포에는 digest를 사용합니다.
+      # Actions Summary에 커밋·태그·digest를 남깁니다. 태그는 재게시될 수 있으므로 Compose 배포에는 digest를 사용합니다.
       - name: 게시 결과 기록
         env:
           IMAGE: ${{ steps.image.outputs.name }}

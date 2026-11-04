@@ -1,6 +1,6 @@
 # 이미지 태그·게시 규칙과 개인 저장소 검증
 
-2026-11-04 · GHCR을 개인 저장소 검증용 기본안으로 사용한다. 파일 작성 완료이며 GitHub 게시·서버 배포 검증은 아직 수행하지 않았다. Compose/Kubernetes 선택과 독립적으로 사용한다.
+2026-11-04 · GHCR을 개인 저장소 검증용 기본안으로 사용한다. 파일 작성 완료이며 GitHub 게시·서버 배포 검증은 아직 수행하지 않았다. 배포는 AWS EC2·Docker Compose로 준비한다. [배포 설정](../../infra/deploy/README.md)을 참고한다.
 
 ## 이름과 버전
 
@@ -57,6 +57,6 @@ curl --fail http://127.0.0.1:18000/readyz
 
 - 작성: 이미지 규칙, CI 재사용, develop 병합 후 이미지 게시 워크플로.
 - 대기: 실제 개인 저장소 업로드·브랜치 보호·Actions 성공·GHCR pull 및 실행 검증.
-- 후속: 배포 자원 확정 후 CD 인증·서비스 교체·상태 검사·롤백 연결. 이미지 게시만으로 CD 전체 완료로 표시하지 않는다.
+- 후속: EC2 자원 확정 후 SSH CD 인증·서비스 교체·상태 검사·롤백 연결. 이미지 게시만으로 CD 전체 완료로 표시하지 않는다.
 
 공식 근거: [GitHub 패키지 게시 인증·권한](https://docs.github.com/en/packages/managing-github-packages-using-github-actions-workflows/publishing-and-installing-a-package-with-github-actions), [Container registry 인증·접근](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
