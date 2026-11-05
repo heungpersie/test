@@ -50,3 +50,7 @@ AWS_REGION, S3_BUCKET, S3_PREFIX를 환경별 예시에 예약했다. prefix 기
 
 - [ECR 인증 토큰](https://docs.aws.amazon.com/cli/latest/reference/ecr/get-login-password.html)
 - [RDS PostgreSQL TLS](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html)
+
+[비용 산정·실행 일정·중지/재시작/삭제 계획 및 담당자 질문](COST_OPERATIONS.md) — 금액·리전·사양 미확정, 실제 작업 미실행.
+
+[개발 자동 배포·발표 승인 조건과 ECR 검증 상태](PIPELINE_STATUS.md)

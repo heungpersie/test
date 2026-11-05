@@ -2,21 +2,21 @@
 
 2026-11-04 · ECS 대안을 종료하고 EC2에 Docker Compose로 배포하는 초안으로 교체했다. AWS 리소스 생성·SSH 접속·실배포는 수행하지 않았다. 1주차는 설정 준비, 실제 AWS 실행은 예산 확인 후 3주차 예정이다.
 
-[환경 분리 기준·완료 범위](ENVIRONMENTS.md)를 먼저 확인한다.
+[환경 분리 기준·완료 범위](ENVIRONMENTS.md)를 먼저 확인한다. [비용·실행 일정·정리 계획](../aws/COST_OPERATIONS.md)도 함께 확인한다.
 
 ## 파일과 흐름
 
 | 파일 | 역할 |
 |---|---|
 | .github/workflows/ci.yml | PR 코드·타입·테스트·빌드. 유지 |
-| .github/workflows/publish-api.yml | develop 병합 후 CI·GHCR 게시. 유지 |
+| .github/workflows/publish-api.yml | develop 병합 후 CI·ECR 게시. 기본 비활성 |
 | .github/workflows/deploy-compose.yml | 수동 입력·SSH 인증·파일 전달·서버 배포. 기본 비활성 |
 | infra/deploy/compose.yaml | 서버에서 게시된 BE 이미지를 실행. RDS·AI·S3 생성 없음 |
 | infra/deploy/deploy.sh | digest pull·교체·상태 검사·이전 이미지와 Compose 복귀 |
 | infra/deploy/.env.example | 공통 예시. 실제 작성은 environments/dev·demo/.env.example 사용 |
 | infra/deploy/validate_environment.py | 해석된 Compose의 대상 환경·DB·포트 혼선 검사 |
 
-전체 흐름: PR CI → develop 병합·이미지 게시 → 검증한 digest 선택 → EC2 pull → Compose 교체 → /healthz·/readyz 확인. 현재는 수동 배포 초안이며 자동 push 배포로 전환한 것은 아니다.
+전체 흐름: PR CI → develop 병합·이미지 게시 → 검증한 digest 선택 → EC2 pull → Compose 교체 → /healthz·/readyz 확인. develop push의 ECR 게시 성공 후 개발 자동 배포를 호출하도록 연결했다. 수동 실행도 지원하며 발표는 main에서 수동·승인 방식이다. 두 활성화 스위치는 기본 비활성이고 실제 배포는 미검증이다.
 
 ## 실행 전 준비 — 지금 생성하지 않음
 
@@ -81,3 +81,5 @@ EC2 중지 후에도 EBS·스냅샷·기타 AWS 자원 비용이 남을 수 있�
 deploy-ecs.yml·Task Definition·OIDC/배포 IAM 예시·render_ecs_task.py는 제거했다. 현재 경로는 Compose/SSH 기준이며 과거 초안은 Git 이력에서 확인한다. 기존 GitHub AWS Environment 변수는 새 변수·Secret 표로 교체하며, 실제 AWS IAM 리소스는 이번 작업으로 생성·삭제하지 않았다.
 
 [Docker Compose 운영 가이드](https://docs.docker.com/compose/how-tos/production/) · [GitHub 배포 환경](https://docs.github.com/en/actions/concepts/workflows-and-actions/deployment-environments)
+
+[자동 개발 배포·발표 승인 정책](../aws/PIPELINE_STATUS.md)

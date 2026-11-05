@@ -1,8 +1,8 @@
 # 파일 역할: EC2에 배포 파일만 전달하고 서버의 Docker Compose로 BE를 교체합니다.
-# 실행: 기본 비활성·수동 실행. develop→aws-dev, main→aws-demo만 허용합니다.
+# 실행: ECR 게시 후 개발 자동 호출 또는 수동 실행. develop→aws-dev, main→aws-demo만 허용합니다.
 # 입력/결과: 검증된 이미지 digest → 서버 pull·기동·상태 검사 → 실패 시 이전 릴리스 복귀 시도.
 # GitHub→EC2는 SSH, EC2→ECR은 인스턴스 역할로 인증합니다. 서버·RDS·S3 생성은 별도입니다.
-name: Deploy API with Compose (manual)
+name: Deploy API with Compose
 on:
   workflow_dispatch:
     inputs:
@@ -13,6 +13,18 @@ on:
         options: [aws-dev, aws-demo]
       image:
         description: Verified repository@sha256:digest
+        required: true
+        type: string
+  # publish-api.yml에서 성공한 이미지 digest를 직접 넘기도록 재사용 진입점을 제공합니다.
+  # 호출한 워크플로의 커밋·브랜치 컨텍스트를 유지하며 Environment Secret은 deploy job에서 읽습니다.
+  workflow_call:
+    inputs:
+      target:
+        description: aws-dev or aws-demo
+        required: true
+        type: string
+      image:
+        description: Verified ECR repository@sha256:digest
         required: true
         type: string
 permissions:

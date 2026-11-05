@@ -28,3 +28,7 @@ EC2는 별도 읽기 전용 인스턴스 역할로 ECR에서 이미지를 pull�
 5. 같은 SHA 재실행에서 기존 digest 재사용, 권한 실패 시 게시 중단을 확인.
 
 실제 서버 배포·롤백은 COMPOSE_DEPLOY_ENABLED와 별도 승인을 사용하며 3주차에 검증한다. ECR 게시·RDS·S3 연결을 GHCR 과거 실행으로 완료 처리하지 않는다.
+
+## 개발 자동 배포 연결 (2026-11-05)
+
+develop push에서 ECR 게시·digest 검증 성공 후 COMPOSE_DEPLOY_ENABLED=true일 때 aws-dev 배포를 자동 호출한다. 수동 게시에서는 자동 배포하지 않는다. 발표는 main 수동 실행과 aws-demo Environment 승인을 사용한다. [조건·검증 상태](../../infra/aws/PIPELINE_STATUS.md)를 따른다.
