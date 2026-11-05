@@ -13,3 +13,5 @@
 - [개발·배포 환경 분리 설정](infra/deploy/ENVIRONMENTS.md)
 
 - [RDS·S3·ECR 선택과 인증 설정](infra/aws/README.md)
+
+- [AWS 네트워크·보안 설계](infra/aws/NETWORK_SECURITY.md)

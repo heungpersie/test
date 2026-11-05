@@ -83,3 +83,5 @@ deploy-ecs.yml·Task Definition·OIDC/배포 IAM 예시·render_ecs_task.py는 �
 [Docker Compose 운영 가이드](https://docs.docker.com/compose/how-tos/production/) · [GitHub 배포 환경](https://docs.github.com/en/actions/concepts/workflows-and-actions/deployment-environments)
 
 [자동 개발 배포·발표 승인 정책](../aws/PIPELINE_STATUS.md)
+
+[네트워크·보안 설계](../aws/NETWORK_SECURITY.md): 사설 앱 배치에서는 현재 GitHub-hosted SSH 경로를 그대로 사용할 수 없으므로 관리망/runner 또는 SSM 방식 확정이 필요하다. 서버 생성 전 확인한다.
