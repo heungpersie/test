@@ -7,3 +7,15 @@
 - [API 실행 안내](api/README.md)
 
 일반 작업은 develop 대상 PR, develop 병합 후 API CI 재검증과 GHCR 게시가 실행됩니다. 서버 CD는 아직 연결하지 않았습니다.
+
+- [EC2·Compose CD 기본 설정](infra/deploy/README.md)
+
+- [개발·배포 환경 분리 설정](infra/deploy/ENVIRONMENTS.md)
+
+- [RDS·S3·ECR 선택과 인증 설정](infra/aws/README.md)
+
+- [AWS 네트워크·보안 설계](infra/aws/NETWORK_SECURITY.md)
+
+- [데이터 접근·보관·삭제 정책](infra/aws/DATA_LIFECYCLE.md)
+
+- [감사 로그 설계·공통 코드](infra/aws/AUDIT_LOGGING.md)

@@ -1,0 +1,101 @@
+# 파일 역할: EC2에 배포 파일만 전달하고 서버의 Docker Compose로 BE를 교체합니다.
+# 실행: ECR 게시 후 개발 자동 호출 또는 수동 실행. develop→aws-dev, main→aws-demo만 허용합니다.
+# 입력/결과: 검증된 이미지 digest → 서버 pull·기동·상태 검사 → 실패 시 이전 릴리스 복귀 시도.
+# GitHub→EC2는 SSH, EC2→ECR은 인스턴스 역할로 인증합니다. 서버·RDS·S3 생성은 별도입니다.
+name: Deploy API with Compose
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: GitHub Environment
+        required: true
+        type: choice
+        options: [aws-dev, aws-demo]
+      image:
+        description: Verified repository@sha256:digest
+        required: true
+        type: string
+  # publish-api.yml에서 성공한 이미지 digest를 직접 넘기도록 재사용 진입점을 제공합니다.
+  # 호출한 워크플로의 커밋·브랜치 컨텍스트를 유지하며 Environment Secret은 deploy job에서 읽습니다.
+  workflow_call:
+    inputs:
+      target:
+        description: aws-dev or aws-demo
+        required: true
+        type: string
+      image:
+        description: Verified ECR repository@sha256:digest
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: compose-${{ inputs.target }}
+  cancel-in-progress: false
+jobs:
+  # 1. 활성화·브랜치 조건 확인 후 코드 CI를 재사용합니다. 입력 이미지의 검증 이력은 릴리스 리뷰에서 확인합니다.
+  validate:
+    if: >-
+      vars.COMPOSE_DEPLOY_ENABLED == 'true' &&
+      ((inputs.target == 'aws-dev' && github.ref == 'refs/heads/develop') ||
+       (inputs.target == 'aws-demo' && github.ref == 'refs/heads/main'))
+    uses: ./.github/workflows/ci.yml
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.target }}
+    env:
+      DEPLOY_IMAGE: ${{ inputs.image }}
+      IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY }}
+      SSH_HOST: ${{ secrets.EC2_SSH_HOST }}
+      SSH_USER: ${{ secrets.EC2_SSH_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
+      TARGET: ${{ inputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+      # 2. 키는 runner의 임시 폴더에 저장합니다. 서버 키를 사전 검증한 known_hosts로 고정합니다.
+      # ssh-keyscan만으로 신뢰를 결정하거나 StrictHostKeyChecking을 끄지 않습니다.
+      - name: 입력 검사·SSH 준비
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in DEPLOY_IMAGE IMAGE_REPOSITORY SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            [[ -n "${!key}" ]] || { echo "Missing setting: $key" >&2; exit 1; }
+          done
+          [[ "$SSH_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$DEPLOY_IMAGE" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z]{2}-[a-z]+-[0-9]+\.amazonaws\.com/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
+          [[ "$DEPLOY_IMAGE" == "$IMAGE_REPOSITORY@sha256:"* ]]
+          install -m 700 -d "$RUNNER_TEMP/compose-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/compose-ssh/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/compose-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/compose-ssh/"*
+          case "$TARGET" in
+            aws-dev) base=/opt/presentation/dev ;;
+            aws-demo) base=/opt/presentation/demo ;;
+            *) echo "Unknown environment" >&2; exit 1 ;;
+          esac
+          echo "DEPLOY_BASE=$base" >> "$GITHUB_ENV"
+          echo "DEPLOY_RELEASE=$base/releases/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      # 3. 실행 코드와 Compose만 전달합니다. DB 비밀번호·서버 api.env는 전송하지 않습니다.
+      - name: 파일 전달·배포·상태 확인
+        shell: bash
+        run: |
+          set -euo pipefail
+          opts=(-i "$RUNNER_TEMP/compose-ssh/key" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/compose-ssh/known_hosts")
+          ssh "${opts[@]}" "$SSH_USER@$SSH_HOST" "mkdir -p '$DEPLOY_RELEASE'"
+          scp "${opts[@]}" infra/deploy/compose.yaml infra/deploy/deploy.sh infra/deploy/validate_environment.py "$SSH_USER@$SSH_HOST:$DEPLOY_RELEASE/"
+          ssh "${opts[@]}" "$SSH_USER@$SSH_HOST" "bash '$DEPLOY_RELEASE/deploy.sh' '$DEPLOY_BASE' '$DEPLOY_RELEASE' '$DEPLOY_IMAGE'"
+          {
+            echo '## EC2 Compose 배포·상태 검사 성공'
+            echo "- 환경: $TARGET"
+            echo "- 이미지: $DEPLOY_IMAGE"
+            echo "- 릴리스: $DEPLOY_RELEASE"
+            echo '- 컨테이너 내부 API·DB 연결 검사 범위이며 외부 HTTPS/E2E 검증은 별도입니다.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # 4. 실패 여부와 관계없이 SSH 키를 정리합니다. runner 자체는 GitHub가 폐기합니다.
+      - name: SSH 임시 파일 제거
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/compose-ssh"

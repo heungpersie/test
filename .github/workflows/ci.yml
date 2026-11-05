@@ -1,5 +1,12 @@
+# 파일 역할: PR의 API 코드 품질·테스트·컨테이너 빌드를 검증하는 CI입니다.
+# 실행 시점: PR 이벤트, Actions 수동 실행, 다른 워크플로의 workflow_call 호출.
+# 입력/결과: 현재 실행 커밋의 api/를 검사하고 성공·실패 상태를 GitHub에 반환합니다.
+# 구조: 코드 검사와 Docker 빌드는 병렬 실행합니다. 두 job 모두 통과해야 후속 게시·배포가 가능합니다.
+# 범위: 이미지 게시·AWS 배포는 하지 않습니다. 필수 검사 이름을 바꾸면 브랜치 보호 설정도 확인합니다.
 name: API CI
 
+# 1. 실행 조건과 공통 권한
+# PR에서는 자동 실행하고, 이미지 게시·CD에서도 같은 CI를 재사용합니다. 토큰은 코드 읽기만 허용합니다.
 on:
   pull_request:
   workflow_dispatch:
@@ -9,6 +16,8 @@ permissions:
   contents: read
 
 jobs:
+  # 2. API 검사 job
+  # GitHub 임시 Linux runner에서 api/를 작업 경로로 사용합니다. Docker 빌드 job과 병렬 실행합니다.
   checks:
     name: API checks
     runs-on: ubuntu-latest
@@ -21,6 +30,8 @@ jobs:
       - name: 코드 가져오기
         uses: actions/checkout@v4
 
+      # 실행 환경 준비
+      # 잠긴 uv·Python·의존성을 설치해 팀원 PC와 CI의 환경 차이를 줄입니다. setup-uv 액션과 uv 도구 버전은 별개입니다.
       - name: uv 설치
         uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
@@ -32,6 +43,8 @@ jobs:
       - name: 의존성 설치
         run: uv sync --locked
 
+      # 코드 검증
+      # Ruff lint·포맷 검사 → mypy 타입 검사 → pytest 순서입니다. 실패하면 이 job은 실패하며 이미지를 게시하지 못합니다.
       - name: 린트 검사
         run: uv run --locked ruff check .
 
@@ -44,6 +57,8 @@ jobs:
       - name: 단위 테스트
         run: uv run --locked pytest -q
 
+  # 3. Docker 빌드 job
+  # 깨끗한 runner에서 api/Dockerfile을 빌드합니다. 테스트 이미지 생성만 하며 push·서비스 실행은 하지 않습니다.
   docker-build:
     name: API Docker build
     runs-on: ubuntu-latest
@@ -54,3 +69,14 @@ jobs:
 
       - name: 이미지 빌드 확인
         run: docker build -t presentation-coach-api:check ./api
+
+  # 배포 환경 검사: 서버 없이 dev/demo 혼선·포트 공개·DB명 혼용 차단을 검증합니다.
+  deployment-config:
+    name: Deployment config checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 환경 분리 검사 테스트
+        run: python3 -m unittest discover -s tools/tests -p 'test_deployment_environment.py' -v
+      - name: 배포 스크립트 구문 검사
+        run: bash -n infra/deploy/deploy.sh
