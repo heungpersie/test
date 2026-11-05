@@ -56,3 +56,5 @@ AWS_REGION, S3_BUCKET, S3_PREFIX를 환경별 예시에 예약했다. prefix 기
 [개발 자동 배포·발표 승인 조건과 ECR 검증 상태](PIPELINE_STATUS.md)
 
 [네트워크·보안 설계 v1](NETWORK_SECURITY.md) — subnet·SG·접속 경로·runtime 권한·LLM 인증·암호화 설계안 및 미정 결정.
+
+[데이터 접근·보관·삭제 정책 설계 v1](DATA_LIFECYCLE.md) — 원본·전사·프레임·보고서·Q&A·백업별 기준과 결정 대기 항목.

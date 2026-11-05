@@ -15,3 +15,5 @@
 - [RDS·S3·ECR 선택과 인증 설정](infra/aws/README.md)
 
 - [AWS 네트워크·보안 설계](infra/aws/NETWORK_SECURITY.md)
+
+- [데이터 접근·보관·삭제 정책](infra/aws/DATA_LIFECYCLE.md)
